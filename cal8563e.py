@@ -1,10 +1,14 @@
 #!/usr/bin/python3
 
-# python script to calibrate HP 8563E flatness with the help of HP8340A,
-# ESG Signal generator and E4418 power meter.
+# python script to calibrate HP 8563E flatness with the help of HP8340A
 
 import vxi11
 import time
+import matplotlib
+import matplotlib.pyplot as plt
+
+freqs = []
+caldac = []
 
 def meas_power(pwr):
     val = float(pwr.ask("FETC?"))
@@ -73,18 +77,15 @@ def set_gain_dac(dev, value, ytf):
     dev.write(f'zrdwr {ytf & 0xff}')
     dev.write(f'zrfcal 0')
     
-def set_freq(esg, hp8340, sa, freq):
-    if freq < 4000:
-        esg.write(f'FREQ:FIX {freq}MHz;POW:LEV -20dBm;')
-    else:
-        hp8340.write(f'CW {freq}E6HZ;PL -20DB;')
+def set_freq(hp8340, sa, freq):
+    hp8340.write(f'CW {freq}E6HZ;PL -20DB;')
 
     sa.write(f'CF {freq}MHZ;') 
     set_gain_dac(sa, 3000, 128)
     time.sleep(0.25)
 
-def cal_freq(esg, hp8340, pwr, sa, eeprom, band, freq, pos, dac):
-    set_freq(esg, hp8340, sa, freq)
+def cal_freq(hp8340, pwr, sa, eeprom, band, freq, pos, dac):
+    set_freq(hp8340, sa, freq)
     sa.write(f'hnlock {band};')
     time.sleep(1)
 
@@ -111,10 +112,12 @@ def cal_freq(esg, hp8340, pwr, sa, eeprom, band, freq, pos, dac):
         retry = retry + 1
 
     print(f'freq {freq}MHz, diff {diff:2.2f}dB, set dac to {dac:d}, ytf {ytf:d}')
+    freqs.append(freq)
+    caldac.append(dac)
     return dac
 
-def _meas_freq(esg, hp8340, pwr, sa, eeprom, band, freq, pos):
-    set_freq(esg, hp8340, sa, freq)
+def _meas_freq(hp8340, pwr, sa, eeprom, band, freq, pos):
+    set_freq(hp8340, sa, freq)
 
     meas_freq(pwr, freq)
     time.sleep(1)
@@ -122,7 +125,7 @@ def _meas_freq(esg, hp8340, pwr, sa, eeprom, band, freq, pos):
     eeprom.set_at(pos, "real", power)
     print(f'freq {freq}MHz, power {power:2.2f}dB')
 
-def cal_band(esg, hp8340, pwr, sa, eeprom, band, pos, minfreq, maxfreq):
+def cal_band(hp8340, pwr, sa, eeprom, band, pos, minfreq, maxfreq):
     freq = band["start"]
     step  = band["step"]
     bandnum = band["band"]
@@ -131,15 +134,13 @@ def cal_band(esg, hp8340, pwr, sa, eeprom, band, pos, minfreq, maxfreq):
 
     while points > 0:
         if freq >= minfreq and freq <= maxfreq:
-            if freq == 4000:
-                input ("Please connect HP8340A and press <ENTER>")
-            dac = cal_freq(esg, hp8340, pwr, sa, eeprom, bandnum, freq, pos, dac)
+            dac = cal_freq(hp8340, pwr, sa, eeprom, bandnum, freq, pos, dac)
         freq = freq + step
         pos = pos + 1
         points = points - 1
     return pos
 
-def meas_band(esg, hp8340, pwr, sa, eeprom, band, pos, minfreq, maxfreq):
+def meas_band(hp8340, pwr, sa, eeprom, band, pos, minfreq, maxfreq):
     freq = band["start"]
     step  = band["step"]
     bandnum = band["band"]
@@ -147,9 +148,7 @@ def meas_band(esg, hp8340, pwr, sa, eeprom, band, pos, minfreq, maxfreq):
 
     while points > 0:
         if freq >= minfreq and freq <= maxfreq:
-            if freq == 4000:
-                input ("Please connect HP8340A and press <ENTER>")
-            _meas_freq(esg, hp8340, pwr, sa, eeprom, bandnum, freq, pos)
+            _meas_freq(hp8340, pwr, sa, eeprom, bandnum, freq, pos)
         freq = freq + step
         pos = pos + 1
         points = points - 1
@@ -243,12 +242,10 @@ def main():
     pwr = vxi11.Instrument("192.168.0.151", "gpib0,13")
     hp8340 = vxi11.Instrument("192.168.0.151", "gpib0,15")
     sa = vxi11.Instrument("192.168.0.151", "gpib0,18")
-    esg = vxi11.Instrument("192.168.0.151", "gpib0,19")
 
     pwr.clear()
     hp8340.clear()
     sa.clear()
-    esg.clear()
     time.sleep(5)
     eeprom = Eeprom()
 
@@ -259,17 +256,21 @@ def main():
         print(band)
 
     eeprom.read(sa)
+    input('Connect Power meter to HP8340')
     pos = 0
-    input("Connect ESG to SA")
     for band in bands:
-        pos = meas_band(esg, hp8340, pwr, sa, eeprom, band, pos, 0, 26500)
-
+        pos = meas_band(hp8340, pwr, sa, eeprom, band, pos, 10, 26500)
+    input('Connect SA to HP8340')
     pos = 0
-    input("Connect ESG to SA")
     for band in bands:
-        pos = cal_band(esg, hp8340, pwr, sa, eeprom, band, pos, 0, 26500)
+        pos = cal_band(hp8340, pwr, sa, eeprom, band, pos, 10, 26500)
 
     eeprom.write(sa)
-
+    fig, ax = plt.subplots()
+    ax.plot(freqs, caldac)
+    ax.set(xlabel='freq (MHz)', ylabel='DAC value', title='calibrated dac values')
+    ax.grid()
+    fig.savefig('caldac.png')
+    plt.show
 if __name__ == "__main__":
     main()
